@@ -4,7 +4,7 @@ Code accompanying the manuscript "Tissue Schematics map the specialization of im
 There are two subfolders included:
 
 CellHier:
-This contains base code, published in Schuerch et al. Cell 2020 and can be found in the  NeighborhoodCoordination repo, with the algorithm for finding cellular neighborhoods
+This contains code for identifying CNs and visualization. This was originally published in Schuerch et al. Cell 2020 and can also be found in the  NeighborhoodCoordination repo.
 
 ipynb:
 This contains the ipython notebooks used to perform the analyses in the paper:
