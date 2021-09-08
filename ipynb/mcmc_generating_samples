@@ -1,0 +1,385 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Populating the interactive namespace from numpy and matplotlib\n"
+     ]
+    }
+   ],
+   "source": [
+    "import sys\n",
+    "sys.path.append('/media/raid/graham/compute/compute/CellHier/graham/cellhier/')\n",
+    "from cellhier.general import *\n",
+    "%load_ext autoreload\n",
+    "%autoreload 2\n",
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "%matplotlib inline\n",
+    "%pylab inline\n",
+    "from matplotlib import pyplot as plt\n",
+    "import skimage\n",
+    "import pickle\n",
+    "import seaborn as sns\n",
+    "import networkx as nx\n",
+    "from sklearn.neighbors import NearestNeighbors\n",
+    "from scipy.sparse.csgraph import connected_components\n",
+    "import itertools\n",
+    "from skimage.color import label2rgb\n",
+    "from scipy import ndimage as ndi\n",
+    "from sklearn.neighbors import NearestNeighbors\n",
+    "from scipy.sparse.csgraph import connected_components as cc\n",
+    "import random\n",
+    "import copy\n",
+    "from tqdm.notebook import tqdm\n",
+    "from multiprocessing import Pool\n",
+    "import time"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#get CRC dataset\n",
+    "cells2 = pd.read_pickle('../submissiondata/cells2_salil')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# need this to deal with CN1 called dirt in original dataset\n",
+    "cn_names = {i:i if i!=0 else i+1 for i in range(10)}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# make some dicts\n",
+    "spot_ids  = cells2['spots'].unique()\n",
+    "pat_gp = cells2[['patients','groups']].drop_duplicates()\n",
+    "pat_to_gp= {a:b for a,b in pat_gp.values}\n",
+    "spot_to_patient = {a:b for a,b in cells2[['spots','patients']].drop_duplicates().values}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def segment_instances(spot_id, num_neighbors,min_instance_size,return_kgr = False):\n",
+    "    '''\n",
+    "    This takes a given TMA spot and segments it using connected components of\n",
+    "    k-neighbors graph computed with num_neighbors; \n",
+    "    only the cells residing in instances with size greater than min_instance_size are returned\n",
+    "    '''\n",
+    "    \n",
+    "    spot = cells2[cells2['spots']==spot_id]\n",
+    "    nn = NearestNeighbors(n_neighbors=10).fit(spot[['X:X','Y:Y']])\n",
+    "    kgr = nn.kneighbors_graph()\n",
+    "\n",
+    "\n",
+    "    min_instance_size = 5\n",
+    "    spot_cn_cell_idxs = {}\n",
+    "    spot_inst_assignments = {}\n",
+    "    instance_assignments = {}\n",
+    "    good_instances = {}\n",
+    "\n",
+    "    for cn in range(10):        \n",
+    "        idx = np.where(spot['neighborhood10']==cn)[0]\n",
+    "        spot_cn_cell_idxs[cn] = idx\n",
+    "        instance_assignments[cn] = cc(kgr[idx,:][:,idx])[1]\n",
+    "        counts = np.unique(instance_assignments[cn],return_counts=True)\n",
+    "        good_instances[cn] = counts[0][counts[1]>min_instance_size]\n",
+    "        cn_good_inst_idx = np.where(np.isin(instance_assignments[cn],good_instances[cn]))[0]\n",
+    "        good_inst_assignments = instance_assignments[cn][cn_good_inst_idx]\n",
+    "        spot_good_inst_cell_idx = spot_cn_cell_idxs[cn][cn_good_inst_idx]\n",
+    "        \n",
+    "        # this is the pair of index (in the spot) of good cells, as well as their assignments\n",
+    "        spot_inst_assignments[cn] = (spot_good_inst_cell_idx,good_inst_assignments)\n",
+    "    \n",
+    "    if return_kgr:\n",
+    "        return spot, spot_cn_cell_idxs, spot_inst_assignments, kgr\n",
+    "    \n",
+    "    return spot, spot_cn_cell_idxs, spot_inst_assignments"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# construct the adj graphs\n",
+    "num_neighbors = 10\n",
+    "min_instance_size = 5\n",
+    "\n",
+    "spot_adj_graphs = {}\n",
+    "spot_data = {}\n",
+    "\n",
+    "\n",
+    "for spot_id in spot_ids:\n",
+    "\n",
+    "    spot_data[spot_id] = segment_instances(spot_id,num_neighbors=num_neighbors,min_instance_size=min_instance_size,return_kgr = True)\n",
+    "    spot, spot_cn_cell_idxs, inst_assignments,kgr  = spot_data[spot_id]\n",
+    "\n",
+    "    for cn1 in range(10):\n",
+    "        for cn2 in range(cn1):\n",
+    "            e1,e2 = kgr[inst_assignments[cn1][0],:][:,inst_assignments[cn2][0]].nonzero()\n",
+    "            for s,t in set(list(zip(inst_assignments[cn1][1][e1],inst_assignments[cn2][1][e2]))):\n",
+    "                spot_adj_graphs.setdefault(spot_id, nx.Graph()).add_edge( (spot_id,cn1,s), (spot_id,cn2,t))\n",
+    "    \n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "neighbors = {}\n",
+    "colors = {}\n",
+    "node_to_idx = {}\n",
+    "idx_to_node = {}\n",
+    "for spot in spot_ids:    \n",
+    "    graph = spot_adj_graphs[spot].copy()\n",
+    "    neighbors[spot] = {}\n",
+    "    colors[spot] = {}\n",
+    "    node_to_idx[spot] = {}\n",
+    "    idx_to_node[spot] = {}\n",
+    "    for i,node in enumerate(graph.nodes()):\n",
+    "        colors[spot][i] = node[1]    \n",
+    "        node_to_idx[spot][node] = i\n",
+    "        idx_to_node[spot][i] = node\n",
+    "\n",
+    "    for i,node in idx_to_node[spot].items():\n",
+    "        neighbors[spot][i] = [node_to_idx[spot][t] for _,t in graph.edges(node)]\n",
+    "        \n",
+    "relabeled_spot_adj_graphs = {spot_id: nx.relabel_nodes(spot_adj_graphs[spot_id], node_to_idx[spot_id]) for spot_id in spot_ids}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import colormc"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "0.04287745952606201 ms per step\n"
+     ]
+    }
+   ],
+   "source": [
+    "t = time.time()\n",
+    "num_samples = 20000\n",
+    "a = colormc.ColorMC(neighbors['46_B'],colors['46_B'])\n",
+    "samps = a.runMC(num_samples,1,0)\n",
+    "s = time.time()-t\n",
+    "print(1000*s/num_samples,'ms per step')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "0.05173041820526123 ms per step\n"
+     ]
+    }
+   ],
+   "source": [
+    "t = time.time()\n",
+    "num_samples = 20000\n",
+    "a = colormc.ColorMCSet(neighbors['46_B'],colors['46_B'])\n",
+    "samps = a.runMC(num_samples,1,0)\n",
+    "s = time.time()-t\n",
+    "print(1000*s/num_samples,'ms per step')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def cpp_mix_spot_graph(input_data):\n",
+    "    neighbors = input_data['neighbors']\n",
+    "    colors = input_data['colors']\n",
+    "    num_samples = input_data['num_samples']\n",
+    "    sample_every = input_data['sample_every']\n",
+    "    burn_steps = input_data['burn_steps']\n",
+    "    isom = input_data['isom']\n",
+    "    if isom=='set':\n",
+    "        cmc = colormc.ColorMCSet(neighbors, colors)\n",
+    "    if isom=='exact':\n",
+    "        cmc = colormc.ColorMC(neighbors, colors)\n",
+    "        \n",
+    "    samps = cmc.runMC(num_samples*sample_every + burn_steps, sample_every, burn_steps)\n",
+    "    return samps\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "no viable transpositions at step 0\n",
+      "no viable transpositions at step 0\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "e2ce4c659f714442a1bc2328d5c6d9a5",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "HBox(children=(IntProgress(value=0, max=140), HTML(value='')))"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "num_samples = 100000\n",
+    "sample_every = 2000\n",
+    "burn_steps = 100000\n",
+    "exact_input_datas = []\n",
+    "set_input_datas = []\n",
+    "spots = spot_ids\n",
+    "for spot in spots:\n",
+    "    exact_input_datas.append({'isom':'set','colors': colors[spot], 'neighbors': neighbors[spot], 'num_samples': num_samples, 'sample_every': sample_every, 'burn_steps': burn_steps})\n",
+    "    set_input_datas.append({'isom':'exact','colors': colors[spot], 'neighbors': neighbors[spot], 'num_samples': num_samples, 'sample_every': sample_every, 'burn_steps': burn_steps})\n",
+    "    \n",
+    "pool = Pool(64)\n",
+    "set_samples = list(tqdm(pool.imap(cpp_mix_spot_graph,set_input_datas), total = len(spots)))\n",
+    "print('set samples done')\n",
+    "exact_samples = list(tqdm(pool.imap(cpp_mix_spot_graph,exact_input_datas), total = len(spots)))\n",
+    "pool.close()\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# !!!!! There was a typo above where the exact input datas have isom=set and vice versa !!!!!"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 18,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data = {'set_samples': {spot:samp for spot,samp in zip(spot_ids,exact_samples)}, 'exact_samples':{spot:samp for spot,samp in zip(spot_ids,set_samples)}}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 25,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "with open('big_MH_data', 'wb') as file:\n",
+    "    pickle.dump(data, file)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "140\n"
+     ]
+    }
+   ],
+   "source": [
+    "col_inputs = []\n",
+    "col_keys = []\n",
+    "for spot, col_list in zip(spots,samples):\n",
+    "    for i,col in enumerate(col_list):\n",
+    "        col_keys.append((spot,i))\n",
+    "        graph = relabeled_spot_adj_graphs[spot]\n",
+    "        col_inputs.append({'graph':graph,'col':col})\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 17,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "140\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(len(exact_samples))"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.4"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
