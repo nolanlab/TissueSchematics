@@ -1,5 +1,5 @@
 # TissueSchematics
-Code accompanying the manuscript "Tissue Schematics map the specialization of immune tissue motifs and their appropriation by tumors" by Bhate, Barlow et al.
+Code accompanying the manuscript "Tissue Schematics map the specialization of immune tissue motifs and their appropriation by tumors" by Bhate, Barlow et al. The HLT data from the Kennedy-Darling et al. paper with CNs added can be found <a href="https://figshare.com/articles/dataset/HLT_data_with_CNs_from_Tissue_Schematics_paper/22213819"> here</a>.
 
 There are three subfolders:
 
